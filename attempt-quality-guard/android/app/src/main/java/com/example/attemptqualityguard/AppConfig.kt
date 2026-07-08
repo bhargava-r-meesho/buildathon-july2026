@@ -17,6 +17,8 @@ object AppConfig {
 
     const val APP_VERSION: String = "1.0"
 
+    private const val PLACEHOLDER_URL: String = "PASTE_WEB_APP_URL_HERE"
+
     fun isConfigured(): Boolean =
-        APPS_SCRIPT_WEB_APP_URL.isNotBlank() && APPS_SCRIPT_WEB_APP_URL != "https://script.google.com/a/macros/meesho.com/s/AKfycbwfjSA5yHBI1agU7QKeOtxQkqvSm8mSfAhAK0ETelplIWASQlrEnqj2GzFH64KBG8Gk/exec"
+        APPS_SCRIPT_WEB_APP_URL.isNotBlank() && APPS_SCRIPT_WEB_APP_URL != PLACEHOLDER_URL
 }
