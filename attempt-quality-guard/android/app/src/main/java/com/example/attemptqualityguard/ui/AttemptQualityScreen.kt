@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -23,7 +22,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -31,10 +29,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -48,13 +44,11 @@ import com.example.attemptqualityguard.AppConfig
 import com.example.attemptqualityguard.evaluation.AttemptEvaluator
 import com.example.attemptqualityguard.model.AttemptUiState
 import com.example.attemptqualityguard.model.SignalStatus
-import kotlin.math.roundToInt
 
 private val REQUIRED_PERMISSIONS = arrayOf(
     Manifest.permission.CALL_PHONE,
     Manifest.permission.READ_PHONE_STATE,
-    Manifest.permission.ACCESS_FINE_LOCATION,
-    Manifest.permission.ACCESS_COARSE_LOCATION,
+    Manifest.permission.READ_PHONE_NUMBERS,
 )
 
 @Composable
@@ -69,8 +63,7 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
         viewModel.onPermissionsUpdated(
             callPhone = hasPermission(Manifest.permission.CALL_PHONE),
             readPhoneState = hasPermission(Manifest.permission.READ_PHONE_STATE),
-            location = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) ||
-                hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION),
+            readPhoneNumbers = hasPermission(Manifest.permission.READ_PHONE_NUMBERS),
         )
     }
 
@@ -84,8 +77,12 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
     // Also re-check on every resume: a permission granted via Settings (or after
     // reinstalling) while this screen was already alive would otherwise never be
     // picked up, silently sending Call Customer down the ACTION_DIAL fallback path.
+    // Resuming is also when we opportunistically retry anything still queued.
     val lifecycleOwner = LocalLifecycleOwner.current
-    val currentOnResume = rememberUpdatedState(::refreshPermissions)
+    val currentOnResume = rememberUpdatedState {
+        refreshPermissions()
+        viewModel.syncPendingLogs()
+    }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -95,8 +92,6 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-
-    var manualLocationExpanded by remember { mutableStateOf(false) }
 
     fun launchDirectCall(phoneNumber: String): Boolean = try {
         val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:${Uri.encode(phoneNumber)}"))
@@ -144,18 +139,11 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
-        Text(text = "Attempt Quality Guard", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(
-            text = "Verifies whether a customer call was actually initiated from the app and " +
-                "reached phone call state.",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Text(
-            text = buildLabel,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.outline,
-            modifier = Modifier.padding(top = 2.dp, bottom = 16.dp),
+            text = "Attempt Quality Guard",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 16.dp),
         )
 
         if (!AppConfig.isConfigured()) {
@@ -175,7 +163,7 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
         PermissionCard(
             callPhoneGranted = state.callPhonePermissionGranted,
             readPhoneStateGranted = state.readPhoneStatePermissionGranted,
-            locationGranted = state.locationPermissionGranted,
+            readPhoneNumbersGranted = state.readPhoneNumbersPermissionGranted,
             modifier = Modifier.padding(bottom = 12.dp),
         )
 
@@ -186,41 +174,6 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
-
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = "Use current location as demo customer location",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Switch(
-                checked = state.useCurrentLocationAsCustomer,
-                onCheckedChange = viewModel::onToggleUseCurrentLocationAsCustomer,
-            )
-        }
-
-        TextButton(onClick = { manualLocationExpanded = !manualLocationExpanded }, modifier = Modifier.wrapContentWidth()) {
-            Text(if (manualLocationExpanded) "Hide manual customer location" else "Manual customer location (advanced)")
-        }
-        if (manualLocationExpanded) {
-            OutlinedTextField(
-                value = state.manualCustomerLat,
-                onValueChange = viewModel::onManualCustomerLatChange,
-                label = { Text("Customer latitude") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-            )
-            OutlinedTextField(
-                value = state.manualCustomerLng,
-                onValueChange = viewModel::onManualCustomerLngChange,
-                label = { Text("Customer longitude") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-            )
-        }
 
         Row(modifier = Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { permissionLauncher.launch(REQUIRED_PERMISSIONS) }, modifier = Modifier.weight(1f)) {
@@ -236,7 +189,7 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
 
         val anyPermissionMissing = !state.callPhonePermissionGranted ||
             !state.readPhoneStatePermissionGranted ||
-            !state.locationPermissionGranted
+            !state.readPhoneNumbersPermissionGranted
         if (anyPermissionMissing) {
             TextButton(onClick = { openAppSettings() }, modifier = Modifier.fillMaxWidth()) {
                 Text(
@@ -244,14 +197,6 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
                         "popup a couple of times, then blocks it silently. Tap here to grant " +
                         "permissions from Settings instead.",
                 )
-            }
-        }
-        Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = viewModel::validateAttempt, modifier = Modifier.weight(1f)) {
-                Text("Validate Attempt")
-            }
-            Button(onClick = viewModel::syncPendingLogs, modifier = Modifier.weight(1f)) {
-                Text("Sync Pending Logs (${state.pendingSyncCount})")
             }
         }
 
@@ -266,18 +211,12 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
         Text(text = "Live Signals", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 20.dp, bottom = 8.dp))
         SignalCards(state)
 
-        Text(text = "Local Event Log", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 20.dp, bottom = 8.dp))
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                if (state.eventLog.isEmpty()) {
-                    Text("No events yet.", style = MaterialTheme.typography.bodySmall)
-                } else {
-                    state.eventLog.forEach { line ->
-                        Text(text = line, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-        }
+        Text(
+            text = buildLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.padding(top = 24.dp),
+        )
     }
 }
 
@@ -328,36 +267,6 @@ private fun SignalCards(state: AttemptUiState) {
             false -> SignalStatus.FAIL
             null -> SignalStatus.WAITING
         },
-        detail = "Evaluated when you tap Validate Attempt.",
-        modifier = spacing,
-    )
-
-    SignalCard(
-        label = "6. Device location captured",
-        status = if (state.locationCaptured) SignalStatus.PASS else SignalStatus.WAITING,
-        detail = state.locationAccuracyM?.let { "Accuracy: ${it.roundToInt()}m" },
-        modifier = spacing,
-    )
-
-    SignalCard(
-        label = "7. Distance from customer location",
-        status = when (state.feNearCustomerLocation) {
-            true -> SignalStatus.PASS
-            false -> SignalStatus.FAIL
-            null -> SignalStatus.WAITING
-        },
-        detail = state.distanceToCustomerM?.let { "${it.roundToInt()}m" }
-            ?: "Evaluated when you tap Validate Attempt.",
-        modifier = spacing,
-    )
-
-    SignalCard(
-        label = "8. FE near customer location",
-        status = when (state.feNearCustomerLocation) {
-            true -> SignalStatus.PASS
-            false -> SignalStatus.FAIL
-            null -> SignalStatus.WAITING
-        },
         modifier = spacing,
     )
 
@@ -367,7 +276,7 @@ private fun SignalCards(state: AttemptUiState) {
         else -> SignalStatus.WAITING
     }
     SignalCard(
-        label = "9. Final decision",
+        label = "6. Final decision",
         status = finalStatus,
         detail = state.finalDecision?.let {
             if (state.missingSignals.isEmpty()) it else "$it — missing: ${state.missingSignals.joinToString(", ")}"

@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.attemptqualityguard"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -60,8 +60,6 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-
-    implementation("com.google.android.gms:play-services-location:21.3.0")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 

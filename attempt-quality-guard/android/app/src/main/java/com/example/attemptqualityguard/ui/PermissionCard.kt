@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.dp
 fun PermissionCard(
     callPhoneGranted: Boolean,
     readPhoneStateGranted: Boolean,
-    locationGranted: Boolean,
+    readPhoneNumbersGranted: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Card(modifier = modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
@@ -40,10 +40,10 @@ fun PermissionCard(
                     "call state, so that signal cannot be verified.",
             )
             PermissionRow(
-                label = "Location",
-                granted = locationGranted,
-                consequenceIfDenied = "Without it, we cannot capture your location, so \"FE near " +
-                    "customer\" cannot be verified.",
+                label = "Read Phone Numbers",
+                granted = readPhoneNumbersGranted,
+                consequenceIfDenied = "Without it, the attempt can't be attributed to this " +
+                    "device's own number (fe_phone_number will be blank).",
             )
         }
     }

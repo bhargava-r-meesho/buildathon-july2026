@@ -13,7 +13,6 @@ object AppConfig {
 
     const val MIN_CALL_STATE_DURATION_SECONDS: Int = 15
     const val VALIDATION_WINDOW_MINUTES: Int = 10
-    const val NEAR_CUSTOMER_RADIUS_METERS: Double = 150.0
 
     const val APP_VERSION: String = "1.0"
 

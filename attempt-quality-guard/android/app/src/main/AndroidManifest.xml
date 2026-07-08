@@ -7,10 +7,8 @@
          attempt this app just initiated. We never query READ_CALL_LOG and never
          read call history. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    <!-- Needed to capture the FE's location at the moment of the call attempt,
-         used only to compute distance to the customer location. -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Needed to attribute each attempt to the FE placing it (fe_phone_number). -->
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
     <!-- Needed to POST attempt events/summaries to the Google Apps Script Web App. -->
     <uses-permission android:name="android.permission.INTERNET" />
 

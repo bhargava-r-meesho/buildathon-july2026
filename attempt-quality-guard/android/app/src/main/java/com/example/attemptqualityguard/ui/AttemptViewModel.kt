@@ -2,11 +2,11 @@ package com.example.attemptqualityguard.ui
 
 import android.app.Application
 import android.os.Build
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.attemptqualityguard.AppConfig
 import com.example.attemptqualityguard.evaluation.AttemptEvaluator
-import com.example.attemptqualityguard.location.LocationTracker
 import com.example.attemptqualityguard.logging.SheetLogger
 import com.example.attemptqualityguard.model.AttemptSummary
 import com.example.attemptqualityguard.model.AttemptUiState
@@ -14,6 +14,7 @@ import com.example.attemptqualityguard.model.EventName
 import com.example.attemptqualityguard.model.RawEvent
 import com.example.attemptqualityguard.telephony.CallStateTracker
 import com.example.attemptqualityguard.util.AppInstallId
+import com.example.attemptqualityguard.util.FePhoneNumber
 import com.example.attemptqualityguard.util.PhoneMasking
 import com.example.attemptqualityguard.util.TimeUtils
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,15 +24,20 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
 
+private const val TAG = "AttemptQualityGuard"
+
 class AttemptViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val locationTracker = LocationTracker(application)
     private val callStateTracker = CallStateTracker(application)
     private val sheetLogger = SheetLogger(application)
     private val appInstallId = AppInstallId.get(application)
 
-    private val _uiState = MutableStateFlow(AttemptUiState(pendingSyncCount = sheetLogger.pendingCount))
+    private val _uiState = MutableStateFlow(AttemptUiState())
     val uiState: StateFlow<AttemptUiState> = _uiState.asStateFlow()
+
+    init {
+        syncPendingLogs()
+    }
 
     private val callStateListener = object : CallStateTracker.Listener {
         override fun onCallStateOffhook() {
@@ -58,11 +64,12 @@ class AttemptViewModel(application: Application) : AndroidViewModel(application)
                 }
                 logEvent(EventName.CALL_STATE_IDLE, phoneState = "IDLE")
                 logEvent(EventName.CALL_DURATION_COMPUTED, callStateDurationSec = durationSec)
+                runValidation()
             }
         }
 
         override fun onTrackingTimedOut() {
-            appendEventLog("Call-state tracking timed out with no IDLE transition observed.")
+            viewModelScope.launch { runValidation() }
         }
     }
 
@@ -70,25 +77,23 @@ class AttemptViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(phoneNumberInput = value) }
     }
 
-    fun onToggleUseCurrentLocationAsCustomer(value: Boolean) {
-        _uiState.update { it.copy(useCurrentLocationAsCustomer = value) }
-    }
-
-    fun onManualCustomerLatChange(value: String) {
-        _uiState.update { it.copy(manualCustomerLat = value) }
-    }
-
-    fun onManualCustomerLngChange(value: String) {
-        _uiState.update { it.copy(manualCustomerLng = value) }
-    }
-
-    fun onPermissionsUpdated(callPhone: Boolean, readPhoneState: Boolean, location: Boolean) {
+    fun onPermissionsUpdated(callPhone: Boolean, readPhoneState: Boolean, readPhoneNumbers: Boolean) {
         _uiState.update {
             it.copy(
                 callPhonePermissionGranted = callPhone,
                 readPhoneStatePermissionGranted = readPhoneState,
-                locationPermissionGranted = location,
+                readPhoneNumbersPermissionGranted = readPhoneNumbers,
             )
+        }
+    }
+
+    /** Called on every screen resume so a working connection picks up anything still queued. */
+    fun syncPendingLogs() {
+        viewModelScope.launch {
+            val result = sheetLogger.syncPending()
+            if (result.succeeded > 0 || result.failed > 0) {
+                Log.d(TAG, "Sync: ${result.succeeded} sent, ${result.failed} still pending. ${result.lastFailureDetail.orEmpty()}")
+            }
         }
     }
 
@@ -111,49 +116,22 @@ class AttemptViewModel(application: Application) : AndroidViewModel(application)
             val attemptId = UUID.randomUUID().toString()
             val masked = PhoneMasking.mask(phoneNumber)
             val hash = PhoneMasking.sha256Hash(phoneNumber)
+            val fePhoneNumber = FePhoneNumber.read(getApplication())
 
             _uiState.update {
                 AttemptUiState(
                     phoneNumberInput = it.phoneNumberInput,
-                    useCurrentLocationAsCustomer = it.useCurrentLocationAsCustomer,
-                    manualCustomerLat = it.manualCustomerLat,
-                    manualCustomerLng = it.manualCustomerLng,
                     callPhonePermissionGranted = it.callPhonePermissionGranted,
                     readPhoneStatePermissionGranted = it.readPhoneStatePermissionGranted,
-                    locationPermissionGranted = it.locationPermissionGranted,
+                    readPhoneNumbersPermissionGranted = it.readPhoneNumbersPermissionGranted,
                     callAttemptId = attemptId,
+                    fePhoneNumber = fePhoneNumber,
                     phoneNumberMasked = masked,
                     phoneNumberHash = hash,
-                    eventLog = it.eventLog,
-                    pendingSyncCount = it.pendingSyncCount,
                 )
             }
 
             logEvent(EventName.CALL_CTA_CLICKED)
-
-            val captured = locationTracker.captureCurrentLocation()
-            if (captured != null) {
-                val (customerLat, customerLng) = resolveCustomerLocation(
-                    useCurrentAsCustomer = _uiState.value.useCurrentLocationAsCustomer,
-                    feLat = captured.lat,
-                    feLng = captured.lng,
-                    manualLatText = _uiState.value.manualCustomerLat,
-                    manualLngText = _uiState.value.manualCustomerLng,
-                )
-                _uiState.update {
-                    it.copy(
-                        feLat = captured.lat,
-                        feLng = captured.lng,
-                        locationAccuracyM = captured.accuracyMeters,
-                        locationCaptured = true,
-                        customerLat = customerLat,
-                        customerLng = customerLng,
-                    )
-                }
-                logEvent(EventName.LOCATION_CAPTURED_BEFORE_CALL)
-            } else {
-                appendEventLog("Could not capture location before the call (permission denied or no fix).")
-            }
 
             val initiatedAt = TimeUtils.nowMs()
             if (_uiState.value.callPhonePermissionGranted) {
@@ -165,12 +143,11 @@ class AttemptViewModel(application: Application) : AndroidViewModel(application)
                     logEvent(EventName.DIRECT_CALL_INTENT_FIRED)
                     if (_uiState.value.readPhoneStatePermissionGranted) {
                         callStateTracker.startTracking(callStateListener)
-                    } else {
-                        appendEventLog("READ_PHONE_STATE not granted: cannot observe call state.")
                     }
                 } else {
                     logEvent(EventName.DIRECT_CALL_INTENT_FAILED)
                     _uiState.update { it.copy(statusMessage = "Could not start the call.") }
+                    runValidation()
                 }
             } else {
                 val dialed = launchDialFallback(phoneNumber)
@@ -183,91 +160,55 @@ class AttemptViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     _uiState.update { it.copy(statusMessage = "Could not open the dialer either.") }
                 }
+                runValidation()
             }
         }
     }
 
-    fun validateAttempt() {
-        viewModelScope.launch {
-            val now = TimeUtils.nowMs()
-            val state = _uiState.value
-            if (state.callAttemptId == null) {
-                _uiState.update { it.copy(statusMessage = "Place a call attempt first.") }
-                return@launch
-            }
+    private suspend fun runValidation() {
+        val now = TimeUtils.nowMs()
+        val state = _uiState.value
+        if (state.callAttemptId == null) return
 
-            val result = AttemptEvaluator.evaluate(state, now)
+        val result = AttemptEvaluator.evaluate(state, now)
 
-            _uiState.update {
-                it.copy(
-                    callHappenedWithinLast10Min = result.callHappenedWithinLast10Min,
-                    distanceToCustomerM = result.distanceToCustomerM,
-                    feNearCustomerLocation = result.feNearCustomerLocation,
-                    finalDecision = result.finalDecision,
-                    missingSignals = result.missingSignals,
-                    statusMessage = null,
-                )
-            }
-
-            logEvent(
-                EventName.VALIDATION_RUN,
-                metadataJson = """{"final_decision":"${result.finalDecision}"}""",
-            )
-
-            val summaryState = _uiState.value
-            val summary = AttemptSummary(
-                validationTsDevice = now,
-                appInstallId = appInstallId,
-                deviceModel = Build.MODEL,
-                androidVersion = Build.VERSION.RELEASE,
-                appVersion = AppConfig.APP_VERSION,
-                callAttemptId = summaryState.callAttemptId.orEmpty(),
-                phoneNumberMasked = summaryState.phoneNumberMasked,
-                phoneNumberHash = summaryState.phoneNumberHash,
-                callInitiatedFromApp = result.callInitiatedFromApp,
-                phoneEnteredCallState = result.phoneEnteredCallState,
-                callStateStartedAt = summaryState.callStateStartedAtMs,
-                callStateEndedAt = summaryState.callStateEndedAtMs,
-                callStateDurationSec = summaryState.callStateDurationSec,
-                callStateLasted15Sec = result.callStateLasted15Sec,
+        _uiState.update {
+            it.copy(
                 callHappenedWithinLast10Min = result.callHappenedWithinLast10Min,
-                feLat = summaryState.feLat,
-                feLng = summaryState.feLng,
-                locationAccuracyM = summaryState.locationAccuracyM,
-                customerLat = summaryState.customerLat,
-                customerLng = summaryState.customerLng,
-                distanceToCustomerM = result.distanceToCustomerM,
-                feNearCustomerLocation = result.feNearCustomerLocation,
                 finalDecision = result.finalDecision,
                 missingSignals = result.missingSignals,
             )
-
-            val outcome = sheetLogger.logAttemptSummary(summary)
-            appendEventLog("Attempt_Summary ${outcome.detail}: ${result.finalDecision}")
-            _uiState.update { it.copy(pendingSyncCount = sheetLogger.pendingCount) }
         }
-    }
 
-    fun syncPendingLogs() {
-        viewModelScope.launch {
-            val result = sheetLogger.syncPending()
-            _uiState.update { it.copy(pendingSyncCount = sheetLogger.pendingCount) }
-            val suffix = result.lastFailureDetail?.let { " — last failure: $it" }.orEmpty()
-            appendEventLog("Sync complete: ${result.succeeded} sent, ${result.failed} still pending.$suffix")
-        }
-    }
+        logEvent(
+            EventName.VALIDATION_RUN,
+            metadataJson = """{"final_decision":"${result.finalDecision}"}""",
+        )
 
-    private fun resolveCustomerLocation(
-        useCurrentAsCustomer: Boolean,
-        feLat: Double,
-        feLng: Double,
-        manualLatText: String,
-        manualLngText: String,
-    ): Pair<Double?, Double?> {
-        if (useCurrentAsCustomer) return feLat to feLng
-        val lat = manualLatText.toDoubleOrNull()
-        val lng = manualLngText.toDoubleOrNull()
-        return lat to lng
+        val summaryState = _uiState.value
+        val summary = AttemptSummary(
+            validationTsDevice = now,
+            appInstallId = appInstallId,
+            deviceModel = Build.MODEL,
+            androidVersion = Build.VERSION.RELEASE,
+            appVersion = AppConfig.APP_VERSION,
+            callAttemptId = summaryState.callAttemptId.orEmpty(),
+            fePhoneNumber = summaryState.fePhoneNumber,
+            phoneNumberMasked = summaryState.phoneNumberMasked,
+            phoneNumberHash = summaryState.phoneNumberHash,
+            callInitiatedFromApp = result.callInitiatedFromApp,
+            phoneEnteredCallState = result.phoneEnteredCallState,
+            callStateStartedAt = summaryState.callStateStartedAtMs,
+            callStateEndedAt = summaryState.callStateEndedAtMs,
+            callStateDurationSec = summaryState.callStateDurationSec,
+            callStateLasted15Sec = result.callStateLasted15Sec,
+            callHappenedWithinLast10Min = result.callHappenedWithinLast10Min,
+            finalDecision = result.finalDecision,
+            missingSignals = result.missingSignals,
+        )
+
+        val outcome = sheetLogger.logAttemptSummary(summary)
+        Log.d(TAG, "Attempt_Summary ${outcome.detail}: ${result.finalDecision}")
     }
 
     private suspend fun logEvent(
@@ -285,31 +226,17 @@ class AttemptViewModel(application: Application) : AndroidViewModel(application)
             appVersion = AppConfig.APP_VERSION,
             callAttemptId = s.callAttemptId.orEmpty(),
             eventName = eventName,
+            fePhoneNumber = s.fePhoneNumber,
             phoneState = phoneState,
             phoneNumberMasked = s.phoneNumberMasked,
             phoneNumberHash = s.phoneNumberHash,
-            lat = s.feLat,
-            lng = s.feLng,
-            locationAccuracyM = s.locationAccuracyM,
-            customerLat = s.customerLat,
-            customerLng = s.customerLng,
-            distanceToCustomerM = s.distanceToCustomerM,
             callStateDurationSec = callStateDurationSec,
             permissionCallPhone = s.callPhonePermissionGranted,
             permissionReadPhoneState = s.readPhoneStatePermissionGranted,
-            permissionLocation = s.locationPermissionGranted,
             metadataJson = metadataJson,
         )
         val outcome = sheetLogger.logRawEvent(event)
-        appendEventLog("$eventName ${outcome.detail}")
-        _uiState.update { it.copy(pendingSyncCount = sheetLogger.pendingCount) }
-    }
-
-    private fun appendEventLog(message: String) {
-        _uiState.update {
-            val updated = (it.eventLog + message).takeLast(30)
-            it.copy(eventLog = updated)
-        }
+        Log.d(TAG, "$eventName ${outcome.detail}")
     }
 
     override fun onCleared() {

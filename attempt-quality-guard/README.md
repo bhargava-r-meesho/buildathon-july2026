@@ -7,8 +7,8 @@ is no visibility into whether the FE actually dialed and stayed on the line.
 
 This app closes that gap for calls it initiates itself: it places the call
 directly, watches the device's call-state transitions for that one attempt,
-captures the FE's location, and writes everything to a shared Google Sheet
-so it can be reviewed centrally.
+and writes everything to a shared Google Sheet so it can be reviewed
+centrally — automatically, with no extra taps.
 
 ## 1. Product overview
 
@@ -16,13 +16,13 @@ so it can be reviewed centrally.
    Customer**.
 2. The app fires `Intent.ACTION_CALL` directly (no dialer hand-off) and
    starts watching call state for that one attempt.
-3. When the phone enters/leaves the call state, the app records the
-   duration.
-4. The FE taps **Validate Attempt**. The app evaluates five signals and
-   shows a single **VERIFIED / NOT_VERIFIED** decision.
-5. Every raw event and every validated summary is appended to a shared
+3. When the call ends (or a fallback path is taken), the app automatically
+   evaluates four signals and shows a single **VERIFIED / NOT_VERIFIED**
+   decision — no separate validation step needed.
+4. Every raw event and every validated summary is appended to a shared
    Google Sheet via a Google Apps Script Web App, so every device installing
-   this APK writes to the same place.
+   this APK writes to the same place. Anything that fails to send is queued
+   locally and retried automatically the next time the app is opened.
 
 ## 2. What signal this strengthens
 
@@ -30,7 +30,8 @@ Today, "quality attempt" = "FE clicked the call CTA in the delivery app."
 That signal is trivially gameable: a click doesn't mean a call happened.
 This app adds a second, harder-to-fake signal: the *device itself* entering
 a live call state for a meaningful duration, immediately after an
-app-initiated call intent, from a location near the customer.
+app-initiated call intent, and it attributes each attempt to the FE's own
+device number (`fe_phone_number`).
 
 ## 3. What it proves
 
@@ -39,8 +40,8 @@ app-initiated call intent, from a location near the customer.
 - The device's telephony stack entered a call state (`OFFHOOK`) and stayed
   there for at least 15 seconds before returning to `IDLE`.
 - This happened within the last 10 minutes of validation.
-- The FE's device was within ~150m (+ GPS accuracy) of the customer location
-  at the time.
+- Which FE device placed it (`fe_phone_number`, when the carrier/SIM exposes
+  it — see the permissions table below).
 
 ## 4. What it does NOT prove
 
@@ -61,8 +62,8 @@ app-initiated call intent, from a location near the customer.
 |---|---|---|
 | `CALL_PHONE` | Places the call directly via `ACTION_CALL`. | Falls back to `ACTION_DIAL` (opens the dialer pre-filled). The attempt is marked `fallback_mode` and can **never** be `VERIFIED`. |
 | `READ_PHONE_STATE` | Lets the app observe call-state transitions (`OFFHOOK`/`IDLE`) **only** for the attempt it just placed. The listener is registered right before the call intent fires and unregistered the moment the call ends (or after a 5-minute timeout). The app never reads call history and never requests `READ_CALL_LOG`. | "Phone entered call state" and "duration" cannot be measured. |
-| `ACCESS_FINE_LOCATION` / `ACCESS_COARSE_LOCATION` | Captures a single fresh location fix at the moment of the call attempt, to compute distance to the customer. No background or continuous tracking. | "FE near customer location" cannot be verified. |
-| `INTERNET` | Sends attempt events to the Google Apps Script Web App. | Events queue locally and can be sent later via **Sync Pending Logs**. |
+| `READ_PHONE_NUMBERS` | Reads this device's own SIM number once per attempt, to attribute it to the FE (`fe_phone_number`). | `fe_phone_number` is left blank for that attempt. |
+| `INTERNET` | Sends attempt events to the Google Apps Script Web App. | Events queue locally and are retried automatically the next time the app is opened. |
 
 The app never requests `READ_CALL_LOG`, `READ_CONTACTS`, `RECORD_AUDIO`, or
 any SMS permission, and never uploads a usable phone number — only a masked
@@ -115,8 +116,8 @@ const val SHARED_SECRET: String = "the-same-secret-you-set-in-Code.gs"
 
 **Use this exact same URL in every APK install** so all devices append to
 the same Google Sheet. If you leave the placeholder URL in place, the app
-still runs and queues events locally (visible via **Sync Pending Logs**),
-but nothing reaches the Sheet until you configure it and reinstall.
+still runs and queues events locally, but nothing reaches the Sheet until
+you configure it and reinstall.
 
 ## 9. Android build steps
 
@@ -163,14 +164,14 @@ sources" if prompted).
 
 See the demo script below, or just:
 
-1. Open the app and tap **Request Permissions**; grant all four.
+1. Open the app and tap **Request Permissions**; grant all three.
 2. Enter a real phone number you can call (e.g. your own second phone).
-3. Leave **"Use current location as demo customer location"** on.
-4. Tap **Call Customer** — the phone app should open and start dialing
+3. Tap **Call Customer** — the phone app should open and start dialing
    immediately (not just pre-fill a number).
-5. Stay on the call for 15+ seconds, then hang up and return to the app.
-6. Tap **Validate Attempt** — you should see **VERIFIED**.
-7. Open the Google Sheet and confirm new rows in `Raw_Events` and
+4. Stay on the call for 15+ seconds, then hang up and return to the app.
+5. The app validates automatically as soon as the call ends — check the
+   "Final decision" signal card for **VERIFIED**.
+6. Open the Google Sheet and confirm new rows in `Raw_Events` and
    `Attempt_Summary`.
 
 ## Demo script
@@ -178,14 +179,11 @@ See the demo script below, or just:
 1. Open app.
 2. Grant permissions.
 3. Enter phone number.
-4. Enable "Use current location as demo customer location".
-5. Tap Call Customer.
-6. End the call after more than 15 seconds.
-7. Return to the app.
-8. Tap Validate Attempt.
-9. Show the VERIFIED result.
-10. Open the Google Sheet and show the new rows in `Raw_Events` and
-    `Attempt_Summary`.
+4. Tap Call Customer.
+5. End the call after more than 15 seconds.
+6. Return to the app — the VERIFIED result appears automatically.
+7. Open the Google Sheet and show the new rows in `Raw_Events` and
+   `Attempt_Summary`.
 
 ## Troubleshooting
 
@@ -215,14 +213,20 @@ calling app.
 
 **Attempt is `NOT_VERIFIED` even though the call clearly happened.** Check
 the missing-signals list on the "Final decision" card — most commonly it's
-"fe_near_customer_location" (you weren't within ~150m of the demo/manual
-customer location) or "call_happened_within_last_10_min" (you validated
-too long after the call).
+"call_state_lasted_15_sec" (hung up too soon) or "phone_entered_call_state"
+(the device never registered an `OFFHOOK` transition — common on emulators).
 
 **Gradle build fails with "SDK location not found."** Set `ANDROID_HOME`
 (or create `android/local.properties` with `sdk.dir=/path/to/Android/sdk`)
 to point at an Android SDK that has platform 34 and build-tools installed.
 
-**Events say "queued (offline)."** No network, or the Web App URL/secret
-is wrong. Fix connectivity/config, then tap **Sync Pending Logs** to retry
-everything that's queued.
+**Rows aren't showing up in the Sheet.** Events that fail to send are
+queued locally and retried automatically the next time the app is opened
+or resumed — no button to tap. If it's still not catching up, check
+`adb logcat` filtered to tag `AttemptQualityGuard` for the exact failure
+reason (HTTP status, network exception, or the server's own error message).
+
+**`fe_phone_number` is blank.** This is expected on many devices/carriers —
+`READ_PHONE_NUMBERS` grants access to the *attempt* of reading the SIM's own
+number, but plenty of SIMs simply don't have it provisioned. There's no
+reliable universal fallback for this on Android.
