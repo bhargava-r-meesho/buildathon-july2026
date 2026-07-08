@@ -8,7 +8,7 @@ package com.example.attemptqualityguard
  * all attempts append to the same Google Sheet.
  */
 object AppConfig {
-    const val APPS_SCRIPT_WEB_APP_URL: String = "https://script.google.com/a/macros/meesho.com/s/AKfycbwfjSA5yHBI1agU7QKeOtxQkqvSm8mSfAhAK0ETelplIWASQlrEnqj2GzFH64KBG8Gk/exec"
+    const val APPS_SCRIPT_WEB_APP_URL: String = "https://script.google.com/macros/s/AKfycbzqTyA2YB58pM4RCYWpd93Sle041AObOFta5frLYUZwvWPUXbbbyZjs8kTeDgSi9kQ/exec"
     const val SHARED_SECRET: String = "AQ_TESTING"
 
     const val MIN_CALL_STATE_DURATION_SECONDS: Int = 15
