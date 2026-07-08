@@ -112,56 +112,60 @@ class AttemptViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        viewModelScope.launch {
-            val attemptId = UUID.randomUUID().toString()
-            val masked = PhoneMasking.mask(phoneNumber)
-            val hash = PhoneMasking.sha256Hash(phoneNumber)
-            val fePhoneNumber = FePhoneNumber.read(getApplication())
+        // Everything below this point is local (UUID, hashing, a TelephonyManager property
+        // read) - no network I/O - so the call intent fires within milliseconds of the tap.
+        // Logging and validation are dispatched as separate background coroutines further
+        // down specifically so a slow/blocked Sheet upload can never delay placing the call.
+        val attemptId = UUID.randomUUID().toString()
+        val masked = PhoneMasking.mask(phoneNumber)
+        val hash = PhoneMasking.sha256Hash(phoneNumber)
+        val fePhoneNumber = FePhoneNumber.read(getApplication())
 
-            _uiState.update {
-                AttemptUiState(
-                    phoneNumberInput = it.phoneNumberInput,
-                    callPhonePermissionGranted = it.callPhonePermissionGranted,
-                    readPhoneStatePermissionGranted = it.readPhoneStatePermissionGranted,
-                    readPhoneNumbersPermissionGranted = it.readPhoneNumbersPermissionGranted,
-                    callAttemptId = attemptId,
-                    fePhoneNumber = fePhoneNumber,
-                    phoneNumberMasked = masked,
-                    phoneNumberHash = hash,
-                )
-            }
+        _uiState.update {
+            AttemptUiState(
+                phoneNumberInput = it.phoneNumberInput,
+                callPhonePermissionGranted = it.callPhonePermissionGranted,
+                readPhoneStatePermissionGranted = it.readPhoneStatePermissionGranted,
+                readPhoneNumbersPermissionGranted = it.readPhoneNumbersPermissionGranted,
+                callAttemptId = attemptId,
+                fePhoneNumber = fePhoneNumber,
+                phoneNumberMasked = masked,
+                phoneNumberHash = hash,
+            )
+        }
 
-            logEvent(EventName.CALL_CTA_CLICKED)
+        viewModelScope.launch { logEvent(EventName.CALL_CTA_CLICKED) }
 
-            val initiatedAt = TimeUtils.nowMs()
-            if (_uiState.value.callPhonePermissionGranted) {
-                val fired = launchDirectCall(phoneNumber)
-                if (fired) {
-                    _uiState.update {
-                        it.copy(callInitiatedFromApp = true, fallbackMode = false, callInitiatedAtMs = initiatedAt)
-                    }
-                    logEvent(EventName.DIRECT_CALL_INTENT_FIRED)
-                    if (_uiState.value.readPhoneStatePermissionGranted) {
-                        callStateTracker.startTracking(callStateListener)
-                    }
-                } else {
-                    logEvent(EventName.DIRECT_CALL_INTENT_FAILED)
-                    _uiState.update { it.copy(statusMessage = "Could not start the call.") }
-                    runValidation()
+        val initiatedAt = TimeUtils.nowMs()
+        if (_uiState.value.callPhonePermissionGranted) {
+            val fired = launchDirectCall(phoneNumber)
+            if (fired) {
+                _uiState.update {
+                    it.copy(callInitiatedFromApp = true, fallbackMode = false, callInitiatedAtMs = initiatedAt)
+                }
+                viewModelScope.launch { logEvent(EventName.DIRECT_CALL_INTENT_FIRED) }
+                if (_uiState.value.readPhoneStatePermissionGranted) {
+                    callStateTracker.startTracking(callStateListener)
                 }
             } else {
-                val dialed = launchDialFallback(phoneNumber)
-                _uiState.update { it.copy(callInitiatedFromApp = false, fallbackMode = true) }
-                if (dialed) {
-                    logEvent(EventName.DIRECT_CALL_INTENT_FAILED, metadataJson = """{"reason":"CALL_PHONE_denied_used_ACTION_DIAL"}""")
-                    _uiState.update {
-                        it.copy(statusMessage = "CALL_PHONE was denied: opened the dialer only. This attempt cannot be VERIFIED.")
-                    }
-                } else {
-                    _uiState.update { it.copy(statusMessage = "Could not open the dialer either.") }
-                }
-                runValidation()
+                viewModelScope.launch { logEvent(EventName.DIRECT_CALL_INTENT_FAILED) }
+                _uiState.update { it.copy(statusMessage = "Could not start the call.") }
+                viewModelScope.launch { runValidation() }
             }
+        } else {
+            val dialed = launchDialFallback(phoneNumber)
+            _uiState.update { it.copy(callInitiatedFromApp = false, fallbackMode = true) }
+            if (dialed) {
+                viewModelScope.launch {
+                    logEvent(EventName.DIRECT_CALL_INTENT_FAILED, metadataJson = """{"reason":"CALL_PHONE_denied_used_ACTION_DIAL"}""")
+                }
+                _uiState.update {
+                    it.copy(statusMessage = "CALL_PHONE was denied: opened the dialer only. This attempt cannot be VERIFIED.")
+                }
+            } else {
+                _uiState.update { it.copy(statusMessage = "Could not open the dialer either.") }
+            }
+            viewModelScope.launch { runValidation() }
         }
     }
 
