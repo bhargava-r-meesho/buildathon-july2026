@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Needed to place the app-initiated verification call directly. -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <!-- Needed only to observe call-state transitions (OFFHOOK/IDLE) for the
+         attempt this app just initiated. We never query READ_CALL_LOG and never
+         read call history. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Needed to capture the FE's location at the moment of the call attempt,
+         used only to compute distance to the customer location. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Needed to POST attempt events/summaries to the Google Apps Script Web App. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AttemptQualityGuard">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.AttemptQualityGuard">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

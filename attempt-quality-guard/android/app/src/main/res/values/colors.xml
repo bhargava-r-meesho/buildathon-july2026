@@ -1,0 +1,6 @@
+<resources>
+    <color name="brand_primary">#1B5E20</color>
+    <color name="brand_warning">#E65100</color>
+    <color name="brand_danger">#B71C1C</color>
+    <color name="brand_neutral">#616161</color>
+</resources>
