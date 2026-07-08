@@ -4,12 +4,12 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
-import android.os.CancellationSignal
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -47,11 +47,11 @@ class LocationTracker(context: Context) {
             .build()
 
         val location: Location? = suspendCancellableCoroutine { continuation ->
-            val cancellationSignal = CancellationSignal()
-            continuation.invokeOnCancellation { cancellationSignal.cancel() }
+            val cancellationTokenSource = CancellationTokenSource()
+            continuation.invokeOnCancellation { cancellationTokenSource.cancel() }
 
             try {
-                client.getCurrentLocation(request, cancellationSignal)
+                client.getCurrentLocation(request, cancellationTokenSource.token)
                     .addOnSuccessListener { loc -> continuation.resume(loc) }
                     .addOnFailureListener { continuation.resume(null) }
             } catch (securityException: SecurityException) {
