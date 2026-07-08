@@ -242,8 +242,8 @@ class AttemptViewModel(application: Application) : AndroidViewModel(application)
                 missingSignals = result.missingSignals,
             )
 
-            val ok = sheetLogger.logAttemptSummary(summary)
-            appendEventLog("Attempt_Summary ${if (ok) "sent" else "queued (offline)"}: ${result.finalDecision}")
+            val outcome = sheetLogger.logAttemptSummary(summary)
+            appendEventLog("Attempt_Summary ${outcome.detail}: ${result.finalDecision}")
             _uiState.update { it.copy(pendingSyncCount = sheetLogger.pendingCount) }
         }
     }
@@ -252,7 +252,8 @@ class AttemptViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val result = sheetLogger.syncPending()
             _uiState.update { it.copy(pendingSyncCount = sheetLogger.pendingCount) }
-            appendEventLog("Sync complete: ${result.succeeded} sent, ${result.failed} still pending.")
+            val suffix = result.lastFailureDetail?.let { " — last failure: $it" }.orEmpty()
+            appendEventLog("Sync complete: ${result.succeeded} sent, ${result.failed} still pending.$suffix")
         }
     }
 
@@ -299,8 +300,8 @@ class AttemptViewModel(application: Application) : AndroidViewModel(application)
             permissionLocation = s.locationPermissionGranted,
             metadataJson = metadataJson,
         )
-        val ok = sheetLogger.logRawEvent(event)
-        appendEventLog("$eventName ${if (ok) "sent" else "queued (offline)"}")
+        val outcome = sheetLogger.logRawEvent(event)
+        appendEventLog("$eventName ${outcome.detail}")
         _uiState.update { it.copy(pendingSyncCount = sheetLogger.pendingCount) }
     }
 

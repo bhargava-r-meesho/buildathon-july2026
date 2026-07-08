@@ -14,7 +14,10 @@ import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-data class SyncResult(val succeeded: Int, val failed: Int)
+data class SyncResult(val succeeded: Int, val failed: Int, val lastFailureDetail: String? = null)
+
+/** Outcome of a single POST attempt, with a human-readable reason for failures. */
+data class PostOutcome(val success: Boolean, val detail: String)
 
 /**
  * Posts attempt events/summaries to the deployed Google Apps Script Web App.
@@ -34,12 +37,12 @@ class SheetLogger(context: Context) {
 
     val pendingCount: Int get() = localQueue.size()
 
-    suspend fun logRawEvent(event: RawEvent): Boolean {
+    suspend fun logRawEvent(event: RawEvent): PostOutcome {
         val payload = buildEnvelope(type = "raw_event", data = rawEventToJson(event))
         return send(payload)
     }
 
-    suspend fun logAttemptSummary(summary: AttemptSummary): Boolean {
+    suspend fun logAttemptSummary(summary: AttemptSummary): PostOutcome {
         val payload = buildEnvelope(type = "attempt_summary", data = attemptSummaryToJson(summary))
         return send(payload)
     }
@@ -50,26 +53,32 @@ class SheetLogger(context: Context) {
         if (pending.isEmpty()) return SyncResult(succeeded = 0, failed = 0)
 
         var succeeded = 0
+        var lastFailureDetail: String? = null
         val stillFailing = mutableListOf<String>()
         for (payloadJson in pending) {
-            val ok = postRaw(payloadJson)
-            if (ok) succeeded++ else stillFailing += payloadJson
+            val outcome = postRaw(payloadJson)
+            if (outcome.success) {
+                succeeded++
+            } else {
+                stillFailing += payloadJson
+                lastFailureDetail = outcome.detail
+            }
         }
 
         localQueue.clear()
         stillFailing.forEach { localQueue.enqueue(it) }
 
-        return SyncResult(succeeded = succeeded, failed = stillFailing.size)
+        return SyncResult(succeeded = succeeded, failed = stillFailing.size, lastFailureDetail = lastFailureDetail)
     }
 
-    private suspend fun send(payloadJson: String): Boolean {
-        val ok = postRaw(payloadJson)
-        if (!ok) localQueue.enqueue(payloadJson)
-        return ok
+    private suspend fun send(payloadJson: String): PostOutcome {
+        val outcome = postRaw(payloadJson)
+        if (!outcome.success) localQueue.enqueue(payloadJson)
+        return outcome
     }
 
-    private suspend fun postRaw(payloadJson: String): Boolean {
-        if (!AppConfig.isConfigured()) return false
+    private suspend fun postRaw(payloadJson: String): PostOutcome {
+        if (!AppConfig.isConfigured()) return PostOutcome(false, "Web App URL not configured")
 
         return withContext(Dispatchers.IO) {
             try {
@@ -80,15 +89,32 @@ class SheetLogger(context: Context) {
                     .build()
 
                 client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) return@withContext false
                     val text = response.body?.string().orEmpty()
-                    val json = JSONObject(text)
-                    json.optBoolean("success", false)
+                    if (!response.isSuccessful) {
+                        return@withContext PostOutcome(
+                            false,
+                            "HTTP ${response.code} ${response.message}".trim() +
+                                if (text.isNotBlank()) " — ${text.take(200)}" else "",
+                        )
+                    }
+                    val json = try {
+                        JSONObject(text)
+                    } catch (e: Exception) {
+                        return@withContext PostOutcome(
+                            false,
+                            "HTTP ${response.code} but non-JSON response — ${text.take(200)}",
+                        )
+                    }
+                    if (json.optBoolean("success", false)) {
+                        PostOutcome(true, "sent")
+                    } else {
+                        PostOutcome(false, "server error: ${json.optString("error", "unknown")}")
+                    }
                 }
             } catch (e: IOException) {
-                false
+                PostOutcome(false, "network error: ${e.javaClass.simpleName}: ${e.message}")
             } catch (e: Exception) {
-                false
+                PostOutcome(false, "error: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
     }
