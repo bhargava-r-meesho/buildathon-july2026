@@ -8,8 +8,8 @@ package com.example.attemptqualityguard
  * all attempts append to the same Google Sheet.
  */
 object AppConfig {
-    const val APPS_SCRIPT_WEB_APP_URL: String = "PASTE_WEB_APP_URL_HERE"
-    const val SHARED_SECRET: String = "CHANGE_ME_FOR_MVP"
+    const val APPS_SCRIPT_WEB_APP_URL: String = "https://script.google.com/a/macros/meesho.com/s/AKfycbwfjSA5yHBI1agU7QKeOtxQkqvSm8mSfAhAK0ETelplIWASQlrEnqj2GzFH64KBG8Gk/exec"
+    const val SHARED_SECRET: String = "AQ_TESTING"
 
     const val MIN_CALL_STATE_DURATION_SECONDS: Int = 15
     const val VALIDATION_WINDOW_MINUTES: Int = 10
@@ -18,5 +18,5 @@ object AppConfig {
     const val APP_VERSION: String = "1.0"
 
     fun isConfigured(): Boolean =
-        APPS_SCRIPT_WEB_APP_URL.isNotBlank() && APPS_SCRIPT_WEB_APP_URL != "PASTE_WEB_APP_URL_HERE"
+        APPS_SCRIPT_WEB_APP_URL.isNotBlank() && APPS_SCRIPT_WEB_APP_URL != "https://script.google.com/a/macros/meesho.com/s/AKfycbwfjSA5yHBI1agU7QKeOtxQkqvSm8mSfAhAK0ETelplIWASQlrEnqj2GzFH64KBG8Gk/exec"
 }
