@@ -24,17 +24,22 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.attemptqualityguard.AppConfig
 import com.example.attemptqualityguard.evaluation.AttemptEvaluator
@@ -72,6 +77,21 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
 
     // Reflect real OS permission state as soon as the screen first composes.
     LaunchedEffect(Unit) { refreshPermissions() }
+
+    // Also re-check on every resume: a permission granted via Settings (or after
+    // reinstalling) while this screen was already alive would otherwise never be
+    // picked up, silently sending Call Customer down the ACTION_DIAL fallback path.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val currentOnResume = rememberUpdatedState(::refreshPermissions)
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                currentOnResume.value()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     var manualLocationExpanded by remember { mutableStateOf(false) }
 
