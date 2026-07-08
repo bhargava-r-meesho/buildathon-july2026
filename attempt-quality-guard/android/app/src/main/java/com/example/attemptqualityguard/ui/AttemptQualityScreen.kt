@@ -3,8 +3,11 @@ package com.example.attemptqualityguard.ui
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -113,6 +116,28 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
         false
     }
 
+    fun openAppSettings() {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", context.packageName, null)
+        }
+        context.startActivity(intent)
+    }
+
+    val buildLabel = remember {
+        try {
+            val packageInfo: PackageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.versionCode.toLong()
+            }
+            "v${packageInfo.versionName} (build $versionCode)"
+        } catch (e: PackageManager.NameNotFoundException) {
+            "unknown build"
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -124,7 +149,13 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
             text = "Verifies whether a customer call was actually initiated from the app and " +
                 "reached phone call state.",
             style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Text(
+            text = buildLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.padding(top = 2.dp, bottom = 16.dp),
         )
 
         if (!AppConfig.isConfigured()) {
@@ -200,6 +231,19 @@ fun AttemptQualityScreen(viewModel: AttemptViewModel = viewModel()) {
                 modifier = Modifier.weight(1f),
             ) {
                 Text("Call Customer")
+            }
+        }
+
+        val anyPermissionMissing = !state.callPhonePermissionGranted ||
+            !state.readPhoneStatePermissionGranted ||
+            !state.locationPermissionGranted
+        if (anyPermissionMissing) {
+            TextButton(onClick = { openAppSettings() }, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Nothing happens when you tap Request Permissions? Android only shows that " +
+                        "popup a couple of times, then blocks it silently. Tap here to grant " +
+                        "permissions from Settings instead.",
+                )
             }
         }
         Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
