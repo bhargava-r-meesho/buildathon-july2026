@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.telephony.PhoneStateListener
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
@@ -22,6 +23,12 @@ import java.util.concurrent.TimeUnit
  *    unregistered as soon as we observe IDLE-after-OFFHOOK, or after [timeoutMs] elapses
  *    with no such transition (e.g. call never connects to the telephony stack, or the
  *    user backs out of the dialer). We are not "always listening" in the background.
+ *
+ * Dual-SIM handling: this app never chooses which SIM places the call - that's entirely
+ * up to Android (either its own SIM-picker dialog, or the user's configured default). On
+ * API 30+ we register a listener on every active SIM subscription so whichever one the
+ * system actually uses still gets observed; on older API levels there is no per-subscription
+ * TelephonyManager API, so we fall back to the single default-SIM listener as before.
  */
 class CallStateTracker(private val context: Context) {
 
@@ -31,14 +38,20 @@ class CallStateTracker(private val context: Context) {
         fun onTrackingTimedOut()
     }
 
+    private class Registration(
+        val telephonyManager: TelephonyManager,
+        val telephonyCallback: TelephonyCallback? = null,
+        val legacyListener: PhoneStateListener? = null,
+    )
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val mainExecutor: Executor = Executor { command -> mainHandler.post(command) }
 
-    private var telephonyCallback: TelephonyCallback? = null
-    private var legacyListener: PhoneStateListener? = null
+    private val registrations = mutableListOf<Registration>()
     private var timeoutRunnable: Runnable? = null
 
     private var sawOffhook = false
+    private var activeTelephonyManager: TelephonyManager? = null
     private var listener: Listener? = null
     var isTracking: Boolean = false
         private set
@@ -57,31 +70,14 @@ class CallStateTracker(private val context: Context) {
 
         this.listener = listener
         this.sawOffhook = false
+        this.activeTelephonyManager = null
         this.isTracking = true
 
-        val telephonyManager =
-            context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        val defaultManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        val perSimManagers = perSubscriptionTelephonyManagers(defaultManager)
+        val managersToWatch = perSimManagers.ifEmpty { listOf(defaultManager) }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val callback = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
-                override fun onCallStateChanged(state: Int) {
-                    handleState(state)
-                }
-            }
-            telephonyManager.registerTelephonyCallback(mainExecutor, callback)
-            telephonyCallback = callback
-        } else {
-            @Suppress("DEPRECATION")
-            val phoneStateListener = object : PhoneStateListener() {
-                @Suppress("DEPRECATION")
-                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
-                    handleState(state)
-                }
-            }
-            @Suppress("DEPRECATION")
-            telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
-            legacyListener = phoneStateListener
-        }
+        managersToWatch.forEach { manager -> registrations += registerOn(manager) }
 
         val timeout = Runnable {
             if (isTracking) {
@@ -94,16 +90,71 @@ class CallStateTracker(private val context: Context) {
         mainHandler.postDelayed(timeout, timeoutMs)
     }
 
-    private fun handleState(state: Int) {
+    /**
+     * One TelephonyManager per active SIM subscription (API 30+ only - createForSubscriptionId
+     * doesn't exist below that). Returns an empty list on older API levels, if there's only one
+     * subscription anyway, or if the subscription list can't be read for any reason - the
+     * caller falls back to the single default-SIM manager in every one of those cases.
+     */
+    private fun perSubscriptionTelephonyManagers(defaultManager: TelephonyManager): List<TelephonyManager> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList()
+        return try {
+            val subscriptionManager = context.getSystemService(SubscriptionManager::class.java)
+                ?: return emptyList()
+            val activeSubscriptions = subscriptionManager.activeSubscriptionInfoList
+                ?: return emptyList()
+            activeSubscriptions.mapNotNull { info ->
+                try {
+                    defaultManager.createForSubscriptionId(info.subscriptionId)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        } catch (e: SecurityException) {
+            emptyList()
+        }
+    }
+
+    private fun registerOn(telephonyManager: TelephonyManager): Registration {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val callback = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+                override fun onCallStateChanged(state: Int) {
+                    handleState(telephonyManager, state)
+                }
+            }
+            telephonyManager.registerTelephonyCallback(mainExecutor, callback)
+            Registration(telephonyManager, telephonyCallback = callback)
+        } else {
+            @Suppress("DEPRECATION")
+            val phoneStateListener = object : PhoneStateListener() {
+                @Suppress("DEPRECATION")
+                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                    handleState(telephonyManager, state)
+                }
+            }
+            @Suppress("DEPRECATION")
+            telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
+            Registration(telephonyManager, legacyListener = phoneStateListener)
+        }
+    }
+
+    /**
+     * [source] identifies which SIM's TelephonyManager reported this state. Once one SIM
+     * reports OFFHOOK it "wins" the attempt; state changes from every other SIM (e.g. an
+     * unused SIM's initial IDLE delivered right as it's registered) are ignored from then on,
+     * so an unrelated SIM can never be mistaken for the end of the call that's actually happening.
+     */
+    private fun handleState(source: TelephonyManager, state: Int) {
         when (state) {
             TelephonyManager.CALL_STATE_OFFHOOK -> {
                 if (!sawOffhook) {
                     sawOffhook = true
+                    activeTelephonyManager = source
                     listener?.onCallStateOffhook()
                 }
             }
             TelephonyManager.CALL_STATE_IDLE -> {
-                if (sawOffhook) {
+                if (sawOffhook && source === activeTelephonyManager) {
                     val cb = listener
                     stopTracking()
                     cb?.onCallStateIdleAfterOffhook()
@@ -115,7 +166,7 @@ class CallStateTracker(private val context: Context) {
         }
     }
 
-    /** Unregister the listener. Safe to call multiple times. */
+    /** Unregister every registered listener. Safe to call multiple times. */
     fun stopTracking() {
         if (!isTracking) return
         isTracking = false
@@ -123,21 +174,19 @@ class CallStateTracker(private val context: Context) {
         timeoutRunnable?.let { mainHandler.removeCallbacks(it) }
         timeoutRunnable = null
 
-        val telephonyManager =
-            context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-
-        telephonyCallback?.let {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                telephonyManager.unregisterTelephonyCallback(it)
+        registrations.forEach { registration ->
+            registration.telephonyCallback?.let {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    registration.telephonyManager.unregisterTelephonyCallback(it)
+                }
+            }
+            registration.legacyListener?.let {
+                @Suppress("DEPRECATION")
+                registration.telephonyManager.listen(it, PhoneStateListener.LISTEN_NONE)
             }
         }
-        telephonyCallback = null
-
-        legacyListener?.let {
-            @Suppress("DEPRECATION")
-            telephonyManager.listen(it, PhoneStateListener.LISTEN_NONE)
-        }
-        legacyListener = null
+        registrations.clear()
+        activeTelephonyManager = null
 
         listener = null
     }

@@ -56,6 +56,16 @@ device number (`fe_phone_number`).
   it is a meaningfully stronger proxy than a CTA click, not a cryptographic
   guarantee.
 
+**Dual-SIM devices**: the app never picks which SIM places the call - that's
+entirely Android's decision (its own SIM-picker dialog, or the FE's configured
+default). On Android 11+ (API 30+), `CallStateTracker` registers on every
+active SIM subscription so whichever one the system actually uses still gets
+observed. On older API levels there's no per-subscription telephony API to do
+that with, so it only watches the default SIM - if a call goes out on the
+non-default SIM on one of those older devices, it may not register `OFFHOOK`
+at all. For those devices, set a single default SIM for calls in the phone's
+own Settings (Network → SIM cards → Calls) to remove the ambiguity.
+
 ## 5. Permissions and what each one unlocks
 
 | Permission | Why | If denied |
